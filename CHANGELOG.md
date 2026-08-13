@@ -4,6 +4,8 @@ All notable changes to LinkSift are documented here.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-14
+
 ### Added
 
 - LinkSift public-project baseline: contribution guide, security policy, issue forms, pull-request template, and CI.
@@ -25,3 +27,6 @@ All notable changes to LinkSift are documented here.
 
 - Playlist truncation is now detected from the raw yt-dlp entry count, so playlists containing unavailable entries still report `truncated` correctly; blank or malformed entries are skipped without failing the request.
 - Container startup now normalizes the entrypoint to LF line endings, including builds made from a Windows working tree.
+
+[Unreleased]: https://github.com/loveisbl1nd/linksift/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/loveisbl1nd/linksift/releases/tag/v0.1.0
