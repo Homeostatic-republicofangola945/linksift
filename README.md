@@ -44,10 +44,16 @@ LinkSift is a local-first media downloader powered by [yt-dlp](https://github.co
   </tr>
 </table>
 
-<p align="center">
-  <img src="assets/screenshot-mobile.png" alt="LinkSift responsive mobile workspace" width="330"><br>
-  <sub>Responsive mobile layout</sub>
-</p>
+<table>
+  <tr>
+    <td width="50%"><img src="assets/screenshot-mobile-light.png" alt="LinkSift light theme mobile workspace"></td>
+    <td width="50%"><img src="assets/screenshot-mobile-dark.png" alt="LinkSift dark theme mobile workspace"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Light theme - mobile</sub></td>
+    <td align="center"><sub>Dark theme - mobile</sub></td>
+  </tr>
+</table>
 
 ## The workflow
 
