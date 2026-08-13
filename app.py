@@ -2,9 +2,12 @@ import glob
 import json
 import math
 import os
+import re
 import shutil
+import signal
 import subprocess
 import threading
+import time
 import uuid
 from collections import deque
 from pathlib import Path
@@ -16,10 +19,19 @@ DOWNLOAD_DIR = os.path.join(os.path.dirname(__file__), "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 DEFAULT_DOWNLOAD_TIMEOUT = 3600
 DEFAULT_MAX_CONCURRENT_DOWNLOADS = 3
+DEFAULT_JOB_TTL = 86400
+DEFAULT_MAX_PLAYLIST_ITEMS = 200
+CLEANUP_INTERVAL_SECONDS = 600
 PROGRESS_PREFIX = "__LINKSIFT_PROGRESS__"
+TERMINAL_STATUSES = frozenset({"done", "error", "cancelled", "timed_out"})
+ACTIVE_STATUSES = frozenset({"downloading", "cancelling"})
+JOB_FILE_NAME_PATTERN = re.compile(r"^[0-9a-f]{10}\.")
 
 jobs = {}
+processes = {}
 jobs_lock = threading.Lock()
+cleanup_lock = threading.Lock()
+last_cleanup_monotonic = None
 
 
 def get_missing_runtime_tools(required_tools):
@@ -62,8 +74,18 @@ def get_max_concurrent_downloads():
     return get_positive_int("LINKSIFT_MAX_CONCURRENT_DOWNLOADS", DEFAULT_MAX_CONCURRENT_DOWNLOADS)
 
 
+def get_job_ttl():
+    return get_positive_int("LINKSIFT_JOB_TTL", DEFAULT_JOB_TTL)
+
+
+def get_max_playlist_items():
+    return get_positive_int("LINKSIFT_MAX_PLAYLIST_ITEMS", DEFAULT_MAX_PLAYLIST_ITEMS)
+
+
 def active_download_count():
-    return sum(job.get("status") == "downloading" for job in jobs.values())
+    """Count jobs still holding a slot: cancelling keeps its slot until the
+    download thread finalizes the job, because the process may still run."""
+    return sum(job.get("status") in ACTIVE_STATUSES for job in jobs.values())
 
 
 def get_request_data():
@@ -138,8 +160,38 @@ def update_job_progress(job, line):
     return True
 
 
+def terminate_process_tree(process):
+    """Best-effort termination of a subprocess and its children (ffmpeg)."""
+    if process is None or process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=15,
+            )
+        else:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
+def cancel_requested(job_id):
+    with jobs_lock:
+        job = jobs.get(job_id)
+        return bool(job and job.get("cancel_requested"))
+
+
 def run_download_command(cmd, job, timeout):
     """Run yt-dlp while streaming machine-readable progress into a job."""
+    popen_kwargs = {}
+    if os.name != "nt":
+        popen_kwargs["start_new_session"] = True
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -147,7 +199,14 @@ def run_download_command(cmd, job, timeout):
         text=True,
         errors="replace",
         bufsize=1,
+        **popen_kwargs,
     )
+    job_id = job.get("id")
+    with jobs_lock:
+        processes[job_id] = process
+        already_cancelled = bool(job.get("cancel_requested"))
+    if already_cancelled:
+        terminate_process_tree(process)
     diagnostics = deque(maxlen=200)
 
     def read_output():
@@ -161,11 +220,13 @@ def run_download_command(cmd, job, timeout):
     try:
         returncode = process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        process.kill()
+        terminate_process_tree(process)
         process.wait(timeout=5)
         raise
     finally:
         reader.join(timeout=5)
+        with jobs_lock:
+            processes.pop(job_id, None)
 
     return subprocess.CompletedProcess(cmd, returncode, stdout="", stderr="\n".join(diagnostics))
 
@@ -219,18 +280,55 @@ def safe_download_name(title, path):
     return f"{safe_title}{extension}" if safe_title else os.path.basename(path)
 
 
-def set_error(job, message):
-    job.update({
-        "status": "error",
-        "phase": "error",
-        "speed": None,
-        "eta": None,
-        "error": message,
-    })
+def finish_job_cancelled(job_id):
+    """Remove every file of a cancelled job and mark it terminal."""
+    cleanup_job_files(job_id, include_final=True)
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if job is None:
+            return
+        job.update({
+            "status": "cancelled",
+            "phase": "cancelled",
+            "speed": None,
+            "eta": None,
+            "percent": None,
+            "error": None,
+            "finished_at": time.time(),
+        })
+
+
+def set_error(job_id, message, status="error"):
+    """Finalize a failed job; a pending cancellation always wins."""
+    was_cancelled = False
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if job is None:
+            return
+        was_cancelled = bool(job.get("cancel_requested"))
+        if not was_cancelled:
+            job.update({
+                "status": status,
+                "phase": status,
+                "speed": None,
+                "eta": None,
+                "error": message,
+                "finished_at": time.time(),
+            })
+    if was_cancelled:
+        finish_job_cancelled(job_id)
 
 
 def run_download(job_id, url, format_choice, format_id):
-    job = jobs[job_id]
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if job is None:
+            return
+        job["id"] = job_id
+        cancelled_before_start = bool(job.get("cancel_requested"))
+    if cancelled_before_start:
+        finish_job_cancelled(job_id)
+        return
     out_template = os.path.join(DOWNLOAD_DIR, f"{job_id}.%(ext)s")
     cmd = [
         "yt-dlp",
@@ -255,16 +353,19 @@ def run_download(job_id, url, format_choice, format_id):
 
     try:
         result = run_download_command(cmd, job, timeout)
+        if cancel_requested(job_id):
+            finish_job_cancelled(job_id)
+            return
         if result.returncode != 0:
             cleanup_job_files(job_id)
             errors = result.stderr.strip().splitlines()
-            set_error(job, errors[-1] if errors else "Download failed")
+            set_error(job_id, errors[-1] if errors else "Download failed")
             return
 
         chosen = select_output_file(job_id, format_choice)
         if not chosen:
             cleanup_job_files(job_id)
-            set_error(job, "Download completed but no final file was found")
+            set_error(job_id, "Download completed but no final file was found")
             return
 
         final_size = os.path.getsize(chosen)
@@ -276,26 +377,116 @@ def run_download(job_id, url, format_choice, format_id):
                 except OSError:
                     pass
 
-        job.update({
-            "phase": "done",
-            "file": chosen,
-            "filename": filename,
-            "downloaded_bytes": final_size,
-            "total_bytes": final_size,
-            "speed": None,
-            "eta": None,
-            "percent": 100.0,
-            "status": "done",
-        })
+        with jobs_lock:
+            cancelled_at_finish = bool(job.get("cancel_requested"))
+            if not cancelled_at_finish:
+                job.update({
+                    "phase": "done",
+                    "file": chosen,
+                    "filename": filename,
+                    "downloaded_bytes": final_size,
+                    "total_bytes": final_size,
+                    "speed": None,
+                    "eta": None,
+                    "percent": 100.0,
+                    "status": "done",
+                    "finished_at": time.time(),
+                })
+        if cancelled_at_finish:
+            finish_job_cancelled(job_id)
     except subprocess.TimeoutExpired:
+        if cancel_requested(job_id):
+            finish_job_cancelled(job_id)
+            return
         cleanup_job_files(job_id)
-        set_error(job, f"Download timed out after {timeout} seconds")
+        set_error(job_id, f"Download timed out after {timeout} seconds", status="timed_out")
     except FileNotFoundError:
         cleanup_job_files(job_id)
-        set_error(job, "Server downloader became unavailable. Restart LinkSift with Docker Compose.")
-    except Exception as exc:
+        set_error(job_id, "Server downloader became unavailable. Restart LinkSift with Docker Compose.")
+    except Exception:
+        app.logger.exception("Download failed unexpectedly for job %s", job_id)
+        if cancel_requested(job_id):
+            finish_job_cancelled(job_id)
+            return
         cleanup_job_files(job_id)
-        set_error(job, str(exc))
+        set_error(job_id, "Download failed unexpectedly")
+
+
+def cleanup_orphan_files(now=None, ttl=None):
+    """Delete stale LinkSift-named files that no known job owns."""
+    if now is None:
+        now = time.time()
+    if ttl is None:
+        ttl = get_job_ttl()
+    with jobs_lock:
+        known_jobs = set(jobs)
+    try:
+        names = os.listdir(DOWNLOAD_DIR)
+    except OSError:
+        app.logger.warning("Could not scan downloads directory for cleanup", exc_info=True)
+        return
+    for name in names:
+        if not JOB_FILE_NAME_PATTERN.match(name) or name[:10] in known_jobs:
+            continue
+        path = os.path.join(DOWNLOAD_DIR, name)
+        try:
+            if not os.path.isfile(path) or now - os.path.getmtime(path) < ttl:
+                continue
+            os.remove(path)
+        except OSError:
+            app.logger.warning("Could not remove orphan file %s", name, exc_info=True)
+
+
+def run_cleanup(now=None):
+    """Expire terminal jobs past their TTL, then sweep orphan files."""
+    if now is None:
+        now = time.time()
+    ttl = get_job_ttl()
+    expired = []
+    with jobs_lock:
+        for job_id, job in list(jobs.items()):
+            if job.get("status") not in TERMINAL_STATUSES:
+                continue
+            finished_at = job.get("finished_at") or job.get("created_at")
+            if finished_at is None or now - finished_at < ttl:
+                continue
+            expired.append(job_id)
+            jobs.pop(job_id, None)
+            processes.pop(job_id, None)
+    for job_id in expired:
+        cleanup_job_files(job_id, include_final=True)
+    cleanup_orphan_files(now=now, ttl=ttl)
+
+
+@app.before_request
+def opportunistic_cleanup():
+    """Run cleanup at most once per interval, without failing the request."""
+    global last_cleanup_monotonic
+    if not cleanup_lock.acquire(blocking=False):
+        return
+    try:
+        now = time.monotonic()
+        if last_cleanup_monotonic is not None and now - last_cleanup_monotonic < CLEANUP_INTERVAL_SECONDS:
+            return
+        last_cleanup_monotonic = now
+        run_cleanup()
+    except Exception:
+        app.logger.exception("LinkSift cleanup failed")
+    finally:
+        cleanup_lock.release()
+
+
+def startup_cleanup():
+    global last_cleanup_monotonic
+    try:
+        with cleanup_lock:
+            last_cleanup_monotonic = time.monotonic()
+            run_cleanup()
+    except Exception:
+        app.logger.exception("LinkSift startup cleanup failed")
+
+
+startup_cleanup()
 
 
 @app.route("/")
@@ -376,16 +567,25 @@ def get_playlist_info():
     if unavailable:
         return unavailable
 
-    cmd = ["yt-dlp", "--flat-playlist", "-J", "--", url]
+    limit = get_max_playlist_items()
+    cmd = ["yt-dlp", "--flat-playlist", "--playlist-items", f"1:{limit + 1}", "-J", "--", url]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode != 0:
             return jsonify({"error": result.stderr.strip().split("\n")[-1]}), 400
 
         info = json.loads(result.stdout)
-        entries = info.get("entries", []) if isinstance(info, dict) else []
-        urls = [entry["url"] for entry in entries if isinstance(entry, dict) and isinstance(entry.get("url"), str)]
-        return jsonify({"urls": urls})
+        entries = info.get("entries") if isinstance(info, dict) else []
+        if not isinstance(entries, list):
+            entries = []
+        urls = [
+            entry["url"]
+            for entry in entries
+            if isinstance(entry, dict) and isinstance(entry.get("url"), str) and entry["url"].strip()
+        ]
+        # Truncation is judged on the raw entry count so unavailable or
+        # malformed entries cannot mask an oversized playlist.
+        return jsonify({"urls": urls[:limit], "truncated": len(entries) > limit, "limit": limit})
     except subprocess.TimeoutExpired:
         return jsonify({"error": "Timed out fetching playlist info"}), 400
     except FileNotFoundError:
@@ -422,6 +622,7 @@ def start_download():
         if active_download_count() >= get_max_concurrent_downloads():
             return jsonify({"error": "Too many downloads in progress"}), 429
         jobs[job_id] = {
+            "id": job_id,
             "status": "downloading",
             "phase": "starting",
             "url": url,
@@ -431,10 +632,34 @@ def start_download():
             "speed": None,
             "eta": None,
             "percent": None,
+            "cancel_requested": False,
+            "created_at": time.time(),
+            "finished_at": None,
         }
     thread = threading.Thread(target=run_download, args=(job_id, url, format_choice, format_id), daemon=True)
     thread.start()
     return jsonify({"job_id": job_id})
+
+
+@app.route("/api/download/<job_id>", methods=["DELETE"])
+def cancel_download(job_id):
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if job is None:
+            return jsonify({"error": "Job not found"}), 404
+        status = job.get("status")
+        if status in TERMINAL_STATUSES:
+            return jsonify({"status": status})
+        job.update({
+            "cancel_requested": True,
+            "status": "cancelling",
+            "phase": "cancelling",
+            "speed": None,
+            "eta": None,
+        })
+        process = processes.get(job_id)
+    terminate_process_tree(process)
+    return jsonify({"status": "cancelling"})
 
 
 @app.route("/api/status/<job_id>")

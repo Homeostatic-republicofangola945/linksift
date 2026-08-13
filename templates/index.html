@@ -220,7 +220,7 @@
     .card:last-child { border-bottom: 0; }
     .card[hidden] { display: none; }
     .card[data-status="downloading"] { box-shadow: inset 3px 0 0 var(--accent-strong); }
-    .card[data-status="error"], .card[data-status="info-error"] { background: linear-gradient(90deg, var(--danger-bg), transparent 42%); }
+    .card[data-status="error"], .card[data-status="info-error"], .card[data-status="timed_out"] { background: linear-gradient(90deg, var(--danger-bg), transparent 42%); }
     .card-thumb { width: 118px; height: 72px; border-radius: var(--radius-sm); overflow: hidden; background: var(--surface-raised); display: grid; place-items: center; color: var(--muted); }
     .card-thumb img { width: 100%; height: 100%; object-fit: cover; transition: transform .2s ease; }
     .card-body { min-width: 0; max-width: 68ch; }
@@ -500,6 +500,7 @@
     let cardData = [];
     let activeFilter = 'all';
     let downloadDirectoryHandle = null;
+    let downloadLaunchCounter = 0;
     const pollControllers = new Map();
     const supportsDirectoryPicker = typeof window.showDirectoryPicker === 'function';
     const themeColor = document.querySelector('meta[name="theme-color"]');
@@ -656,6 +657,42 @@
       pollControllers.clear();
     }
 
+    async function cancelJobOnServer(jobId) {
+      if (!jobId) return false;
+      try {
+        const response = await fetch(`/api/download/${jobId}`, { method: 'DELETE' });
+        return response.ok;
+      } catch (_) {
+        return false; // Cancellation is best-effort; the UI must keep working.
+      }
+    }
+
+    function cancelActiveDownloads() {
+      cardData.forEach(card => {
+        if (card.status !== 'downloading' && card.status !== 'cancelling') return;
+        card.cancelRequested = true; // Also covers launches whose POST has not returned a job id yet.
+        if (card.jobId) cancelJobOnServer(card.jobId);
+      });
+      cancelActivePolls();
+    }
+
+    async function cancelCard(index) {
+      const card = cardData[index];
+      if (!card || (card.status !== 'downloading' && card.status !== 'cancelling')) return;
+      card.cancelRequested = true;
+      card.status = 'cancelling';
+      renderCard(index);
+      updateManifest();
+      if (!card.jobId) return; // POST is still pending: dlCard sends the DELETE once the job id arrives.
+      const accepted = await cancelJobOnServer(card.jobId);
+      if (!accepted && cardData[index] === card && card.status === 'cancelling') {
+        card.cancelRequested = false;
+        card.status = 'downloading';
+        renderCard(index);
+        updateManifest();
+      }
+    }
+
     function fmtDur(seconds) {
       const value = Number(seconds);
       if (!Number.isFinite(value) || value < 0) return '';
@@ -707,7 +744,8 @@
 
     function statusMatchesFilter(card) {
       if (activeFilter === 'all') return true;
-      if (activeFilter === 'issues') return card.status === 'error' || card.status === 'info-error';
+      if (activeFilter === 'issues') return card.status === 'error' || card.status === 'info-error' || card.status === 'timed_out';
+      if (activeFilter === 'downloading') return card.status === 'downloading' || card.status === 'cancelling';
       return card.status === activeFilter;
     }
 
@@ -740,9 +778,9 @@
       const counts = { ready: 0, downloading: 0, done: 0, issues: 0 };
       cardData.forEach(card => {
         if (card.status === 'ready') counts.ready++;
-        else if (card.status === 'downloading') counts.downloading++;
+        else if (card.status === 'downloading' || card.status === 'cancelling') counts.downloading++;
         else if (card.status === 'done') counts.done++;
-        else if (card.status === 'error' || card.status === 'info-error') counts.issues++;
+        else if (card.status === 'error' || card.status === 'info-error' || card.status === 'timed_out') counts.issues++;
       });
       setLiveText('manifestSummary', `${cardData.length} found · ${counts.ready} ready · ${counts.downloading} active · ${counts.done} complete${counts.issues ? ` · ${counts.issues} need attention` : ''}`);
       updateEmptyState();
@@ -831,6 +869,9 @@
       }
 
       const isDownloading = card.status === 'downloading';
+      const isCancelling = card.status === 'cancelling';
+      const isCancelled = card.status === 'cancelled';
+      const isTimedOut = card.status === 'timed_out';
       const isDone = card.status === 'done';
       const isError = card.status === 'error';
 
@@ -843,7 +884,7 @@
       }
 
       const formatLabel = card.downloadFormat === 'audio' || (!card.downloadFormat && currentFormat === 'audio') ? 'MP3 audio' : 'MP4 video';
-      const qualityChips = !isDownloading && !isDone && card.formats?.length > 1
+      const qualityChips = !isDownloading && !isCancelling && !isDone && card.formats?.length > 1
         ? card.formats.map((format, formatIndex) => `<button type="button" class="chip quality" data-format-index="${formatIndex}" aria-pressed="${String(format.id === card.selectedFormatId)}">${esc(format.label)}</button>`).join('')
         : '';
       let statusHtml = '';
@@ -855,12 +896,22 @@
         statusHtml = `<span class="status-line done">${label}</span>`;
       } else if (isError) {
         statusHtml = `<details class="error-details"><summary>${esc(friendlyError(card.error))}</summary><p>${esc(card.error)}</p></details>`;
+      } else if (isCancelling) {
+        statusHtml = '<span class="status-line">Cancelling…</span>';
+      } else if (isCancelled) {
+        statusHtml = '<span class="status-line">Cancelled</span>';
+      } else if (isTimedOut) {
+        statusHtml = `<span class="status-line error">${esc(card.error || 'Download timed out')}</span>`;
       }
-      const action = isDownloading ? statusHtml : isDone
+      const action = isDownloading
+        ? `${statusHtml}<button type="button" class="retry-btn" data-cancel="true">Cancel</button>`
+        : isCancelling ? statusHtml : isDone
         ? `<button type="button" class="retry-btn" data-save="true">Save again</button>${statusHtml}`
-        : isError
+        : (isError || isTimedOut)
           ? `<button type="button" class="retry-btn" data-download="true">Retry download</button>${statusHtml}`
-          : `<button type="button" class="download-btn" data-download="true">${downloadDirectoryHandle ? `Save to ${esc(downloadDirectoryHandle.name)}` : 'Download'}</button>`;
+          : isCancelled
+            ? `<button type="button" class="retry-btn" data-download="true">Download again</button>${statusHtml}`
+            : `<button type="button" class="download-btn" data-download="true">${downloadDirectoryHandle ? `Save to ${esc(downloadDirectoryHandle.name)}` : 'Download'}</button>`;
       const thumbnail = card.thumbnail ? '<img alt="">' : '<span aria-hidden="true">⌁</span>';
 
       const active = document.activeElement;
@@ -868,6 +919,7 @@
         ? (active.dataset.formatIndex !== undefined ? `[data-format-index="${active.dataset.formatIndex}"]`
           : active.hasAttribute('data-download') ? '[data-download]'
           : active.hasAttribute('data-save') ? '[data-save]'
+          : active.hasAttribute('data-cancel') ? '[data-cancel]'
           : null)
         : null;
 
@@ -880,6 +932,7 @@
       }));
       element.querySelector('[data-download]')?.addEventListener('click', () => dlCard(index));
       element.querySelector('[data-save]')?.addEventListener('click', () => saveCard(index, true));
+      element.querySelector('[data-cancel]')?.addEventListener('click', () => cancelCard(index));
 
       if (refocusSelector) {
         const target = element.querySelector(refocusSelector);
@@ -911,10 +964,11 @@
       button.disabled = true;
       button.innerHTML = '<span class="btn-spinner" aria-hidden="true"></span>Inspecting…';
       document.documentElement.dataset.activity = 'inspecting';
-      cancelActivePolls();
+      cancelActiveDownloads();
       cardData = [];
       document.getElementById('cards').replaceChildren();
       setFilter('all');
+      let playlistNotice = '';
       try {
         for (let index = 0; index < urls.length; index++) {
           if (!urls[index].includes('list=')) continue;
@@ -922,6 +976,11 @@
           const data = await response.json();
           if (!response.ok || data.error) throw new Error(data.error || 'Could not load playlist');
           if (Array.isArray(data.urls) && data.urls.length) urls.splice(index, 1, ...data.urls);
+          if (data.truncated) playlistNotice = `Showing the first ${Number(data.limit) || data.urls.length} items from this playlist.`;
+        }
+        if (playlistNotice) {
+          status.textContent = playlistNotice;
+          status.dataset.state = 'ok';
         }
         for (const url of urls) {
           const index = cardData.length;
@@ -953,26 +1012,53 @@
 
     document.getElementById('inboxForm').addEventListener('submit', event => { event.preventDefault(); inspectLinks(); });
 
+    function isStaleLaunch(card, index, launchToken) {
+      return cardData[index] !== card || card.launchToken !== launchToken;
+    }
+
+    function settleIdleActivity() {
+      if (!cardData.some(item => item.status === 'downloading' || item.status === 'cancelling')) document.documentElement.dataset.activity = 'idle';
+    }
+
     async function dlCard(index) {
       const card = cardData[index];
-      if (!card || card.status === 'downloading') return;
-      Object.assign(card, { status: 'downloading', phase: 'starting', downloadedBytes: 0, totalBytes: null, speed: null, eta: null, percent: null, reconnecting: 0, error: null, saved: false, savedToBrowser: false, saving: false, savedToFolder: null, downloadFormat: currentFormat });
+      if (!card || card.status === 'downloading' || card.status === 'cancelling') return;
+      const launchToken = ++downloadLaunchCounter;
+      Object.assign(card, { status: 'downloading', phase: 'starting', downloadedBytes: 0, totalBytes: null, speed: null, eta: null, percent: null, reconnecting: 0, error: null, saved: false, savedToBrowser: false, saving: false, savedToFolder: null, downloadFormat: currentFormat, jobId: null, launchToken, cancelRequested: false });
       document.documentElement.dataset.activity = 'downloading';
       renderCard(index);
       updateManifest();
+      let data;
       try {
         const response = await fetch('/api/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: card.url, format: card.downloadFormat, format_id: card.selectedFormatId, title: card.title || '' }) });
-        const data = await response.json();
+        data = await response.json();
         if (!response.ok || data.error) throw new Error(data.error || 'Could not start download');
-        card.jobId = data.job_id;
-        pollCard(index, card);
       } catch (err) {
-        card.status = 'error';
-        card.error = err.message || 'Could not start download';
-        document.documentElement.dataset.activity = 'issue';
+        if (isStaleLaunch(card, index, launchToken)) return; // A stale request must never touch the card now at this index.
+        if (card.cancelRequested) {
+          Object.assign(card, { status: 'cancelled', error: null });
+          settleIdleActivity();
+        } else {
+          card.status = 'error';
+          card.error = err.message || 'Could not start download';
+          document.documentElement.dataset.activity = 'issue';
+        }
         renderCard(index);
         updateManifest();
+        return;
       }
+      if (isStaleLaunch(card, index, launchToken) || card.cancelRequested) {
+        cancelJobOnServer(data.job_id); // The job id arrived too late: cancel it server-side, best-effort.
+        if (!isStaleLaunch(card, index, launchToken)) {
+          Object.assign(card, { status: 'cancelled', error: null });
+          settleIdleActivity();
+          renderCard(index);
+          updateManifest();
+        }
+        return;
+      }
+      card.jobId = data.job_id;
+      pollCard(index, card);
     }
 
     function pollCard(index, card) {
@@ -1005,7 +1091,23 @@
             updateManifest();
             return;
           }
-          card.status = 'downloading';
+          if (data.status === 'cancelled') {
+            pollControllers.delete(card.jobId);
+            Object.assign(card, { status: 'cancelled', error: null });
+            settleIdleActivity();
+            renderCard(index);
+            updateManifest();
+            return;
+          }
+          if (data.status === 'timed_out') {
+            pollControllers.delete(card.jobId);
+            Object.assign(card, { status: 'timed_out', error: data.error || 'Download timed out' });
+            document.documentElement.dataset.activity = 'issue';
+            renderCard(index);
+            updateManifest();
+            return;
+          }
+          card.status = data.status === 'cancelling' ? 'cancelling' : 'downloading';
         } catch (err) {
           if (err.name === 'AbortError') return;
           failures += 1;

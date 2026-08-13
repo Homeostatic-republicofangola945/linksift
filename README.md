@@ -115,9 +115,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow and pull req
 | `HOST` | `127.0.0.1` | Bind address. Keep it local unless a protected reverse proxy is in front. |
 | `LINKSIFT_DOWNLOAD_TIMEOUT` | `3600` | Maximum seconds allowed for one yt-dlp process. |
 | `LINKSIFT_MAX_CONCURRENT_DOWNLOADS` | `3` | Maximum simultaneous downloads in the in-memory worker. |
+| `LINKSIFT_JOB_TTL` | `86400` | Seconds a terminal job (done, error, timed_out, or cancelled) and its files are kept before automatic cleanup. Invalid, zero, or negative values fall back to the default. |
+| `LINKSIFT_MAX_PLAYLIST_ITEMS` | `200` | Maximum playlist entries expanded per inspection. Longer playlists are truncated to the first N items. Invalid values fall back to the default. |
 | `LINKSIFT_NO_UPDATE` | unset | Set to `1` to skip the startup yt-dlp update. |
 
 Job state is held in memory. The Docker command therefore uses one Gunicorn worker; restarting the service clears active job status. Do not add workers until job state moves to shared storage.
+
+Downloaded files and job status are a temporary cache, not an archive: LinkSift removes finished jobs and their files after `LINKSIFT_JOB_TTL` seconds and sweeps stale leftover files it created at startup and periodically while running. Active downloads are never touched by TTL cleanup. Save completed files through the browser before the TTL expires. Playlists larger than `LINKSIFT_MAX_PLAYLIST_ITEMS` only queue the first configured number of items; truncation is detected from the playlist size reported by yt-dlp, and unavailable or malformed playlist entries are skipped without failing the request.
 
 ## Supported sites
 
