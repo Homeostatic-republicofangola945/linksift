@@ -1,0 +1,15 @@
+name: linksift
+
+services:
+  linksift:
+    build: .
+    image: linksift:latest
+    container_name: linksift
+    ports:
+      - "127.0.0.1:8899:8899"
+    volumes:
+      - linksift-downloads:/app/downloads
+    restart: unless-stopped
+
+volumes:
+  linksift-downloads:

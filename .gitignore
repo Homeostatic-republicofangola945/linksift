@@ -1,0 +1,16 @@
+venv/
+downloads/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+assets/*.mov
+.DS_Store
+.env
+.env.local
+.env.production
+.env.development
+out_*.txt
+verify_*.py
+NUL
+.superpowers/
+.claude/worktrees/

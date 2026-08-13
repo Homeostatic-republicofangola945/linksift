@@ -1,0 +1,27 @@
+# Version-control and local development artifacts
+.git
+.gitignore
+.gitattributes
+.github
+venv
+__pycache__
+.pytest_cache
+tests
+*.py[cod]
+out_*.txt
+verify_*.py
+
+# Runtime and local secrets
+downloads
+.env
+.env.*
+
+# Repository-only documentation and previews
+README.md
+CONTRIBUTING.md
+SECURITY.md
+CHANGELOG.md
+LICENSE
+assets
+.vscode
+.idea

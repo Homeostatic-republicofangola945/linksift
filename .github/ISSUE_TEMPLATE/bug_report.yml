@@ -1,0 +1,37 @@
+name: Bug report
+description: Report a reproducible LinkSift defect
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Please remove personal data, cookies, tokens, and private URLs before submitting.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and the expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start LinkSift with ...
+        2. Paste a non-sensitive example URL ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: LinkSift version or commit
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: OS, browser, Docker/local install, Python version
+    validations:
+      required: true
