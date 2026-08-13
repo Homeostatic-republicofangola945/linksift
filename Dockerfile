@@ -1,5 +1,11 @@
 FROM python:3.12-slim
 
+LABEL org.opencontainers.image.title="LinkSift" \
+      org.opencontainers.image.description="Local-first media download queue powered by yt-dlp and ffmpeg" \
+      org.opencontainers.image.source="https://github.com/loveisbl1nd/linksift" \
+      org.opencontainers.image.documentation="https://github.com/loveisbl1nd/linksift#readme" \
+      org.opencontainers.image.licenses="MIT"
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
@@ -14,7 +20,8 @@ RUN pip install --no-cache-dir -r requirements.txt gunicorn
 
 COPY . .
 
-RUN useradd -m -u 1000 linksift && \
+RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && \
+    useradd -m -u 1000 linksift && \
     mkdir -p /app/downloads && \
     chown -R linksift:linksift /app
 USER linksift

@@ -11,8 +11,13 @@ RELEASE_BRAND_FILES = (
     "CONTRIBUTING.md",
     "SECURITY.md",
     "CHANGELOG.md",
+    "PROVENANCE.md",
+    "THIRD_PARTY_NOTICES.md",
+    "RELEASING.md",
+    "ROADMAP.md",
     "Dockerfile",
     "docker-compose.yml",
+    "compose.ghcr.yml",
     "docker-entrypoint.sh",
     "linksift.sh",
     "app.py",
@@ -24,6 +29,7 @@ RELEASE_BRAND_FILES = (
     ".github/ISSUE_TEMPLATE/config.yml",
     ".github/pull_request_template.md",
     ".github/workflows/ci.yml",
+    ".github/workflows/release.yml",
 )
 
 FORBIDDEN_ARTIFACT_MARKERS = ("user-attachments",)
@@ -115,10 +121,12 @@ class RuntimeDependencyTests(unittest.TestCase):
         dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
         entrypoint = (root / "docker-entrypoint.sh").read_text(encoding="utf-8")
         compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+        release_compose = (root / "compose.ghcr.yml").read_text(encoding="utf-8")
 
         first_bash_block = re.search(r"```bash\s*\n(.*?)\n```", readme, re.DOTALL)
         self.assertIsNotNone(first_bash_block)
-        self.assertEqual(first_bash_block.group(1).strip(), "docker compose up --build")
+        self.assertIn("docker run -d --name linksift", first_bash_block.group(1))
+        self.assertIn("ghcr.io/loveisbl1nd/linksift:latest", first_bash_block.group(1))
         self.assertIn("Development", readme)
         self.assertIn("./linksift.sh", contributing)
         self.assertIn("Python 3.12", contributing)
@@ -136,3 +144,7 @@ class RuntimeDependencyTests(unittest.TestCase):
         self.assertIn("container_name: linksift", compose)
         self.assertIn('"127.0.0.1:8899:8899"', compose)
         self.assertIn("linksift-downloads", compose)
+        self.assertIn("image: ghcr.io/loveisbl1nd/linksift:${LINKSIFT_VERSION:-latest}", release_compose)
+        self.assertNotIn("build:", release_compose)
+        self.assertIn('"127.0.0.1:8899:8899"', release_compose)
+        self.assertIn("linksift-downloads", release_compose)

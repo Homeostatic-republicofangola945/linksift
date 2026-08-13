@@ -21,7 +21,11 @@ README.md
 CONTRIBUTING.md
 SECURITY.md
 CHANGELOG.md
-LICENSE
+PROVENANCE.md
+RELEASING.md
+ROADMAP.md
+docker-compose.yml
+compose.ghcr.yml
 assets
 .vscode
 .idea

@@ -11,6 +11,8 @@
 
 <p align="center">
   <a href="https://github.com/loveisbl1nd/linksift/actions/workflows/ci.yml"><img src="https://github.com/loveisbl1nd/linksift/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/loveisbl1nd/linksift/releases"><img src="https://img.shields.io/github/v/release/loveisbl1nd/linksift?display_name=tag&sort=semver&label=release&labelColor=10171b&color=c8f55a" alt="Latest release"></a>
+  <a href="https://github.com/loveisbl1nd/linksift/pkgs/container/linksift"><img src="https://img.shields.io/badge/GHCR-linux%2Famd64%20%7C%20arm64-2496ED?logo=github&logoColor=white" alt="GHCR architectures"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-c8f55a?labelColor=10171b" alt="MIT License"></a>
   <a href="https://github.com/yt-dlp/yt-dlp"><img src="https://img.shields.io/badge/powered%20by-yt--dlp-10171b" alt="Powered by yt-dlp"></a>
   <a href="Dockerfile"><img src="https://img.shields.io/badge/runtime-Docker-2496ED?logo=docker&logoColor=white" alt="Docker runtime"></a>
@@ -24,7 +26,7 @@ LinkSift is a local-first media downloader powered by [yt-dlp](https://github.co
 
 | | |
 | --- | --- |
-| **Deployment** | Docker Compose for normal use; local launcher for contributors |
+| **Deployment** | Versioned GHCR image for normal use; source build and local launcher for contributors |
 | **Interface** | Responsive browser UI with light, dark, and system themes |
 | **Formats** | MP4 video or MP3 audio |
 | **Queue** | Multiple URLs, quality selection, concurrency limit, live progress |
@@ -74,19 +76,28 @@ LinkSift is a local-first media downloader powered by [yt-dlp](https://github.co
 - **Live progress** - phase, percentage, downloaded bytes, speed, ETA, and final status.
 - **Browser save controls** - use the default browser download flow or choose a folder in Chromium-based browsers.
 - **Predictable runtime** - Docker includes Python, yt-dlp, ffmpeg, Gunicorn, and a non-root `linksift` user.
+- **Verifiable releases** - version tags publish amd64/arm64 images with OCI metadata, an SBOM, and GitHub build-provenance attestations.
 - **Offline CI** - regression tests mock external tools and never call media platforms.
 
 ## Quick start
 
-Docker is the supported end-user path. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/), then run:
+Docker is the supported end-user path. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/), then start the published image:
 
 ```bash
-docker compose up --build
+docker run -d --name linksift --restart unless-stopped -p 127.0.0.1:8899:8899 -v linksift-downloads:/app/downloads ghcr.io/loveisbl1nd/linksift:latest
 ```
 
 Open <http://localhost:8899>. You do not need Python, yt-dlp, ffmpeg, or a virtual environment on the host.
 
-Downloads persist in the named `linksift-downloads` Docker volume. To stop the service, press `Ctrl+C`; to run it in the background, use `docker compose up --build -d`.
+Downloads persist in the named `linksift-downloads` Docker volume. Pin a numbered image such as `0.1.0` instead of `latest` when reproducibility matters. Stop and remove the container with `docker stop linksift` followed by `docker rm linksift`; the volume remains intact.
+
+To use Compose with the published image after cloning the repository:
+
+```bash
+docker compose -f compose.ghcr.yml up -d
+```
+
+To build the current source locally instead, run `docker compose up --build -d`.
 
 ## Development
 
@@ -102,10 +113,23 @@ Before opening a pull request, run:
 python -m unittest discover -s tests -v
 python -m py_compile app.py
 docker compose config
+docker compose -f compose.ghcr.yml config
 docker build -t linksift:local .
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow and pull request checklist.
+
+## Releases and image verification
+
+Pushing a tag in the form `vMAJOR.MINOR.PATCH` runs the release pipeline. It repeats the offline validation suite, builds `linux/amd64` and `linux/arm64` images, publishes SemVer and `latest` tags to [GHCR](https://github.com/loveisbl1nd/linksift/pkgs/container/linksift), attaches supply-chain metadata, and creates the matching GitHub Release.
+
+After installing the [GitHub CLI](https://cli.github.com/), verify that a published image was built by this repository's release workflow:
+
+```bash
+gh attestation verify oci://ghcr.io/loveisbl1nd/linksift:0.1.0 -R loveisbl1nd/linksift
+```
+
+Maintainers should follow [RELEASING.md](RELEASING.md), including the one-time GHCR visibility check. An attestation establishes build origin; it does not replace source or dependency review.
 
 ## Configuration
 
@@ -144,15 +168,24 @@ static/                Favicon and static assets
 assets/                README screenshots
 Dockerfile             Production container image
 docker-compose.yml     Local Docker deployment
+compose.ghcr.yml       Deployment using the published GHCR image
 linksift.sh            Contributor-only local launcher
 tests/                 Offline regression suite
 .github/               CI, issue forms, and pull request template
+PROVENANCE.md           Verified source history and metrics boundary
+THIRD_PARTY_NOTICES.md  Preserved licenses for inherited source
+RELEASING.md            Tagged release and verification runbook
+ROADMAP.md              Maintainer direction and contribution candidates
 ```
 
 ## Contributing
 
-Bug reports, documentation improvements, tests, and focused pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and the issue templates before contributing.
+Bug reports, documentation improvements, tests, and focused pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md), the contributor-oriented [ROADMAP.md](ROADMAP.md), [SECURITY.md](SECURITY.md), and the issue templates before contributing.
+
+## Project provenance
+
+LinkSift began from an MIT-licensed ReClip source baseline and is now maintained independently with its own identity, history, releases, and adoption metrics. The exact upstream repository and commit, the scope of LinkSift's changes, and the history boundary are recorded in [PROVENANCE.md](PROVENANCE.md). The inherited MIT notice is preserved in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); no upstream endorsement is implied.
 
 ## License
 
-[MIT](LICENSE) - Copyright (c) 2026 iaht
+[MIT](LICENSE) - Copyright (c) 2026 iaht. Inherited portions retain the notice in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
