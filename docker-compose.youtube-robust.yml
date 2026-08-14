@@ -1,0 +1,37 @@
+# Optional "YouTube robust" overlay: adds a PO token provider sidecar and the
+# matching yt-dlp plugin for more reliable YouTube downloads.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.youtube-robust.yml up -d --build
+#
+# The provider is only reachable inside the Docker network; no host port is
+# published. Plugin and sidecar versions are pinned together.
+name: linksift
+
+services:
+  linksift:
+    # A distinct tag keeps the GPL-free default image (linksift:latest)
+    # separate from the robust build containing the PO token plugin.
+    image: linksift:youtube-robust
+    build:
+      context: .
+      target: youtube-robust
+    environment:
+      LINKSIFT_PO_TOKEN_PROVIDER_URL: "http://bgutil-provider:4416"
+    depends_on:
+      bgutil-provider:
+        condition: service_healthy
+
+  bgutil-provider:
+    # Must match bgutil-ytdlp-pot-provider== in requirements-youtube-robust.txt.
+    image: brainicism/bgutil-ytdlp-pot-provider:1.3.1
+    container_name: linksift-bgutil-provider
+    init: true
+    restart: unless-stopped
+    expose:
+      - "4416"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:4416/ping', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s

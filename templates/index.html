@@ -219,7 +219,7 @@
     .card { display: grid; grid-template-columns: 118px minmax(0, 1fr) auto; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--line-soft); background: transparent; transition: background var(--motion-fast) var(--ease-out); min-width: 0; animation: card-in var(--motion-slow) var(--ease-out) both; }
     .card:last-child { border-bottom: 0; }
     .card[hidden] { display: none; }
-    .card[data-status="downloading"] { box-shadow: inset 3px 0 0 var(--accent-strong); }
+    .card[data-status="downloading"], .card[data-status="queued"] { box-shadow: inset 3px 0 0 var(--accent-strong); }
     .card[data-status="error"], .card[data-status="info-error"], .card[data-status="timed_out"] { background: linear-gradient(90deg, var(--danger-bg), transparent 42%); }
     .card-thumb { width: 118px; height: 72px; border-radius: var(--radius-sm); overflow: hidden; background: var(--surface-raised); display: grid; place-items: center; color: var(--muted); }
     .card-thumb img { width: 100%; height: 100%; object-fit: cover; transition: transform .2s ease; }
@@ -669,7 +669,7 @@
 
     function cancelActiveDownloads() {
       cardData.forEach(card => {
-        if (card.status !== 'downloading' && card.status !== 'cancelling') return;
+        if (!isActiveStatus(card.status)) return;
         card.cancelRequested = true; // Also covers launches whose POST has not returned a job id yet.
         if (card.jobId) cancelJobOnServer(card.jobId);
       });
@@ -678,7 +678,8 @@
 
     async function cancelCard(index) {
       const card = cardData[index];
-      if (!card || (card.status !== 'downloading' && card.status !== 'cancelling')) return;
+      if (!card || !isActiveStatus(card.status)) return;
+      const previousStatus = card.status;
       card.cancelRequested = true;
       card.status = 'cancelling';
       renderCard(index);
@@ -687,7 +688,7 @@
       const accepted = await cancelJobOnServer(card.jobId);
       if (!accepted && cardData[index] === card && card.status === 'cancelling') {
         card.cancelRequested = false;
-        card.status = 'downloading';
+        card.status = previousStatus; // A queued card stays queued with its position; polling keeps refreshing it.
         renderCard(index);
         updateManifest();
       }
@@ -742,10 +743,14 @@
       return message.length > 100 ? `${message.slice(0, 100)}…` : message;
     }
 
+    function isActiveStatus(status) {
+      return status === 'downloading' || status === 'cancelling' || status === 'queued';
+    }
+
     function statusMatchesFilter(card) {
       if (activeFilter === 'all') return true;
       if (activeFilter === 'issues') return card.status === 'error' || card.status === 'info-error' || card.status === 'timed_out';
-      if (activeFilter === 'downloading') return card.status === 'downloading' || card.status === 'cancelling';
+      if (activeFilter === 'downloading') return isActiveStatus(card.status);
       return card.status === activeFilter;
     }
 
@@ -778,7 +783,7 @@
       const counts = { ready: 0, downloading: 0, done: 0, issues: 0 };
       cardData.forEach(card => {
         if (card.status === 'ready') counts.ready++;
-        else if (card.status === 'downloading' || card.status === 'cancelling') counts.downloading++;
+        else if (isActiveStatus(card.status)) counts.downloading++;
         else if (card.status === 'done') counts.done++;
         else if (card.status === 'error' || card.status === 'info-error' || card.status === 'timed_out') counts.issues++;
       });
@@ -810,13 +815,28 @@
     }
 
     function progressParts(card) {
+      if (card.status === 'queued') {
+        const position = Number.isFinite(card.queuePosition) && card.queuePosition >= 1 ? Math.round(card.queuePosition) : null;
+        return {
+          hasPercent: false,
+          percent: 34,
+          phase: position ? `Queued — #${position} in line` : 'Queued',
+          size: 'Waiting for a worker',
+          eta: '',
+          reconnecting: false,
+        };
+      }
       const hasPercent = Number.isFinite(card.percent);
       const percent = hasPercent ? Math.max(0, Math.min(100, card.percent)) : 34;
-      const phase = card.phase === 'processing' ? 'Packaging file' : card.phase === 'starting' ? 'Starting download' : 'Downloading';
+      const retrying = card.phase === 'retrying';
+      const phase = card.phase === 'processing' ? 'Packaging file'
+        : card.phase === 'starting' ? 'Starting download'
+        : retrying ? (Number.isFinite(card.attempt) && Number.isFinite(card.maxAttempts) ? `Retrying — attempt ${card.attempt} of ${card.maxAttempts}` : 'Retrying')
+        : 'Downloading';
       const sizeBase = card.totalBytes ? `${fmtBytes(card.downloadedBytes)} / ${fmtBytes(card.totalBytes)}` : card.downloadedBytes ? fmtBytes(card.downloadedBytes) : 'Waiting for data';
       const speed = Number.isFinite(card.speed) && card.speed > 0 ? ` · ${fmtBytes(card.speed)}/s` : '';
       const reconnecting = Boolean(card.reconnecting);
-      const eta = reconnecting ? `Reconnecting (${card.reconnecting}/3)…` : Number.isFinite(card.eta) && card.eta >= 0 ? `${fmtEta(card.eta)} left` : 'Estimating';
+      const eta = reconnecting ? `Reconnecting (${card.reconnecting}/3)…` : retrying ? 'Waiting to retry' : Number.isFinite(card.eta) && card.eta >= 0 ? `${fmtEta(card.eta)} left` : 'Estimating';
       return { hasPercent, percent, phase, size: sizeBase + speed, eta, reconnecting };
     }
 
@@ -869,13 +889,14 @@
       }
 
       const isDownloading = card.status === 'downloading';
+      const isQueued = card.status === 'queued';
       const isCancelling = card.status === 'cancelling';
       const isCancelled = card.status === 'cancelled';
       const isTimedOut = card.status === 'timed_out';
       const isDone = card.status === 'done';
       const isError = card.status === 'error';
 
-      if (isDownloading && previousStatus === 'downloading') {
+      if ((isDownloading || isQueued) && (previousStatus === 'downloading' || previousStatus === 'queued')) {
         const wrap = element.querySelector('.progress-wrap');
         if (wrap) {
           updateProgressWrap(wrap, card);
@@ -884,11 +905,11 @@
       }
 
       const formatLabel = card.downloadFormat === 'audio' || (!card.downloadFormat && currentFormat === 'audio') ? 'MP3 audio' : 'MP4 video';
-      const qualityChips = !isDownloading && !isCancelling && !isDone && card.formats?.length > 1
+      const qualityChips = !isDownloading && !isQueued && !isCancelling && !isDone && card.formats?.length > 1
         ? card.formats.map((format, formatIndex) => `<button type="button" class="chip quality" data-format-index="${formatIndex}" aria-pressed="${String(format.id === card.selectedFormatId)}">${esc(format.label)}</button>`).join('')
         : '';
       let statusHtml = '';
-      if (isDownloading) {
+      if (isDownloading || isQueued) {
         const parts = progressParts(card);
         statusHtml = `<div class="progress-wrap"><div class="progress-top"><span>${parts.phase}</span><span>${parts.hasPercent ? `${parts.percent.toFixed(1)}%` : '—'}</span></div><div class="progress-track" role="progressbar" aria-label="Download progress" aria-valuemin="0" aria-valuemax="100"${parts.hasPercent ? ` aria-valuenow="${parts.percent}"` : ''}><div class="progress-fill${parts.hasPercent ? '' : ' indeterminate'}"${parts.hasPercent ? ` style="width:${parts.percent}%"` : ''}></div></div><div class="progress-stats"><span>${parts.size}</span><span${parts.reconnecting ? ' class="status-line reconnecting"' : ''}>${parts.eta}</span></div></div>`;
       } else if (isDone) {
@@ -903,7 +924,7 @@
       } else if (isTimedOut) {
         statusHtml = `<span class="status-line error">${esc(card.error || 'Download timed out')}</span>`;
       }
-      const action = isDownloading
+      const action = (isDownloading || isQueued)
         ? `${statusHtml}<button type="button" class="retry-btn" data-cancel="true">Cancel</button>`
         : isCancelling ? statusHtml : isDone
         ? `<button type="button" class="retry-btn" data-save="true">Save again</button>${statusHtml}`
@@ -1006,7 +1027,7 @@
         button.disabled = false;
         button.innerHTML = 'Inspect links <span aria-hidden="true">↗</span>';
         button.style.minWidth = '';
-        if (!cardData.some(card => card.status === 'downloading')) document.documentElement.dataset.activity = 'idle';
+        if (!cardData.some(card => isActiveStatus(card.status))) document.documentElement.dataset.activity = 'idle';
       }
     }
 
@@ -1017,14 +1038,14 @@
     }
 
     function settleIdleActivity() {
-      if (!cardData.some(item => item.status === 'downloading' || item.status === 'cancelling')) document.documentElement.dataset.activity = 'idle';
+      if (!cardData.some(item => isActiveStatus(item.status))) document.documentElement.dataset.activity = 'idle';
     }
 
     async function dlCard(index) {
       const card = cardData[index];
-      if (!card || card.status === 'downloading' || card.status === 'cancelling') return;
+      if (!card || isActiveStatus(card.status)) return;
       const launchToken = ++downloadLaunchCounter;
-      Object.assign(card, { status: 'downloading', phase: 'starting', downloadedBytes: 0, totalBytes: null, speed: null, eta: null, percent: null, reconnecting: 0, error: null, saved: false, savedToBrowser: false, saving: false, savedToFolder: null, downloadFormat: currentFormat, jobId: null, launchToken, cancelRequested: false });
+      Object.assign(card, { status: 'downloading', phase: 'starting', downloadedBytes: 0, totalBytes: null, speed: null, eta: null, percent: null, queuePosition: null, reconnecting: 0, error: null, saved: false, savedToBrowser: false, saving: false, savedToFolder: null, downloadFormat: currentFormat, jobId: null, launchToken, cancelRequested: false });
       document.documentElement.dataset.activity = 'downloading';
       renderCard(index);
       updateManifest();
@@ -1073,7 +1094,7 @@
           if (!response.ok) throw new Error(data.error || 'Status check failed');
           failures = 0;
           card.reconnecting = 0;
-          Object.assign(card, { phase: data.phase, downloadedBytes: data.downloaded_bytes, totalBytes: data.total_bytes, speed: data.speed, eta: data.eta, percent: data.percent });
+          Object.assign(card, { phase: data.phase, downloadedBytes: data.downloaded_bytes, totalBytes: data.total_bytes, speed: data.speed, eta: data.eta, percent: data.percent, queuePosition: data.queue_position, attempt: data.attempt, maxAttempts: data.max_attempts });
           if (data.status === 'done') {
             pollControllers.delete(card.jobId);
             Object.assign(card, { status: 'done', filename: data.filename });
@@ -1107,7 +1128,7 @@
             updateManifest();
             return;
           }
-          card.status = data.status === 'cancelling' ? 'cancelling' : 'downloading';
+          card.status = data.status === 'cancelling' ? 'cancelling' : data.status === 'queued' ? 'queued' : 'downloading';
         } catch (err) {
           if (err.name === 'AbortError') return;
           failures += 1;

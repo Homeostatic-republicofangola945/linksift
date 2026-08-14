@@ -1,4 +1,8 @@
-FROM python:3.12-slim
+# Deno supplies the JavaScript runtime yt-dlp needs to solve YouTube's JS
+# challenges (EJS). Official image, pinned; only the static binary is copied.
+FROM denoland/deno:bin-2.4.3 AS deno
+
+FROM python:3.12-slim AS base
 
 LABEL org.opencontainers.image.title="LinkSift" \
       org.opencontainers.image.description="Local-first media download queue powered by yt-dlp and ffmpeg" \
@@ -12,6 +16,8 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg && \
     rm -rf /var/lib/apt/lists/*
+
+COPY --from=deno /deno /usr/local/bin/deno
 
 WORKDIR /app
 
@@ -33,3 +39,14 @@ EXPOSE 8899
 
 ENTRYPOINT ["sh", "/app/docker-entrypoint.sh"]
 CMD ["gunicorn", "-b", "0.0.0.0:8899", "-w", "1", "--threads", "4", "--timeout", "600", "--access-logfile", "-", "app:app"]
+
+# Optional target with the GPL-licensed PO token provider plugin. Its version
+# must stay in lockstep with the provider sidecar image, so the startup
+# updater intentionally leaves it alone.
+FROM base AS youtube-robust
+USER root
+RUN pip install --no-cache-dir -r /app/requirements-youtube-robust.txt
+USER linksift
+
+# Default build target: the base image without the GPL plugin.
+FROM base AS default

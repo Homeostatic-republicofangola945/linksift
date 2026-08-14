@@ -26,6 +26,7 @@ jobs:
         run: |
           docker compose config --quiet
           docker compose -f compose.ghcr.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.youtube-robust.yml config --quiet
 
   image:
     runs-on: ubuntu-latest

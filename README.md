@@ -126,7 +126,7 @@ Pushing a tag in the form `vMAJOR.MINOR.PATCH` runs the release pipeline. It rep
 After installing the [GitHub CLI](https://cli.github.com/), verify that a published image was built by this repository's release workflow:
 
 ```bash
-gh attestation verify oci://ghcr.io/loveisbl1nd/linksift:0.1.0 -R loveisbl1nd/linksift
+gh attestation verify oci://ghcr.io/loveisbl1nd/linksift:0.2.0 -R loveisbl1nd/linksift
 ```
 
 Maintainers should follow [RELEASING.md](RELEASING.md), including the one-time GHCR visibility check. An attestation establishes build origin; it does not replace source or dependency review.
@@ -138,14 +138,45 @@ Maintainers should follow [RELEASING.md](RELEASING.md), including the one-time G
 | `PORT` | `8899` | HTTP port used by the development server. |
 | `HOST` | `127.0.0.1` | Bind address. Keep it local unless a protected reverse proxy is in front. |
 | `LINKSIFT_DOWNLOAD_TIMEOUT` | `3600` | Maximum seconds allowed for one yt-dlp process. |
-| `LINKSIFT_MAX_CONCURRENT_DOWNLOADS` | `3` | Maximum simultaneous downloads in the in-memory worker. |
+| `LINKSIFT_MAX_CONCURRENT_DOWNLOADS` | `3` | Number of download worker slots — jobs actually running at the same time, clamped to 1–16. Jobs beyond this limit wait in a FIFO queue instead of being rejected. Invalid, zero, or negative values fall back to the default. |
+| `LINKSIFT_MAX_QUEUED_DOWNLOADS` | `200` | Maximum jobs allowed to wait in the queue, not counting running jobs. When the queue is full, `POST /api/download` returns 429. Invalid, zero, or negative values fall back to the default. |
+| `LINKSIFT_CONCURRENT_FRAGMENTS` | `4` | Fragment parallelism inside a single DASH/HLS download (yt-dlp `--concurrent-fragments`), clamped to 1–16. Invalid, zero, or negative values fall back to the default. |
 | `LINKSIFT_JOB_TTL` | `86400` | Seconds a terminal job (done, error, timed_out, or cancelled) and its files are kept before automatic cleanup. Invalid, zero, or negative values fall back to the default. |
 | `LINKSIFT_MAX_PLAYLIST_ITEMS` | `200` | Maximum playlist entries expanded per inspection. Longer playlists are truncated to the first N items. Invalid values fall back to the default. |
-| `LINKSIFT_NO_UPDATE` | unset | Set to `1` to skip the startup yt-dlp update. |
+| `LINKSIFT_JOB_RETRIES` | `2` | Extra fresh-extraction attempts after a failed download attempt (0–5). Only transient failures (HTTP 403/429/5xx, network resets, timeouts) are retried. Invalid values fall back to the default. |
+| `LINKSIFT_RETRY_BASE_DELAY` | `2` | Seconds before the first retry; doubles per retry and is capped at 15 s. Backoff time counts against `LINKSIFT_DOWNLOAD_TIMEOUT`. Invalid or negative values fall back to the default. |
+| `LINKSIFT_PO_TOKEN_PROVIDER_URL` | unset | Base URL of a bgutil PO token provider (robust mode). Must be an `http`/`https` URL with a hostname; invalid values are ignored with a warning. |
+| `LINKSIFT_NO_UPDATE` | unset | Set to `1` to skip the startup update of yt-dlp and yt-dlp-ejs. |
 
-Job state is held in memory. The Docker command therefore uses one Gunicorn worker; restarting the service clears active job status. Do not add workers until job state moves to shared storage.
+`LINKSIFT_MAX_CONCURRENT_DOWNLOADS` controls how many downloads run at once; `LINKSIFT_MAX_QUEUED_DOWNLOADS` controls how many may wait behind them. Queued jobs report `status: "queued"` and a 1-based `queue_position` from `GET /api/status/<job_id>`, and can be cancelled before they start. `LINKSIFT_CONCURRENT_FRAGMENTS` only parallelizes fragmented (DASH/HLS) downloads — it does not speed up every URL, and higher concurrency values increase CPU and network load without guaranteeing faster downloads. Total resource use scales with both settings combined: up to `LINKSIFT_MAX_CONCURRENT_DOWNLOADS × LINKSIFT_CONCURRENT_FRAGMENTS` fragment connections plus one ffmpeg process per running job can be active at the same time.
+
+Job state is held in memory. The Docker command therefore uses one Gunicorn worker; restarting the service or container clears queued and active job state, and partially downloaded `.part` files are not resumed automatically after a restart (the TTL cleanup removes them instead). This is accepted behavior for the local-first design. Do not add workers until job state moves to shared storage.
 
 Downloaded files and job status are a temporary cache, not an archive: LinkSift removes finished jobs and their files after `LINKSIFT_JOB_TTL` seconds and sweeps stale leftover files it created at startup and periodically while running. Active downloads are never touched by TTL cleanup. Save completed files through the browser before the TTL expires. Playlists larger than `LINKSIFT_MAX_PLAYLIST_ITEMS` only queue the first configured number of items; truncation is detected from the playlist size reported by yt-dlp, and unavailable or malformed playlist entries are skipped without failing the request.
+
+## YouTube reliability
+
+YouTube periodically rejects freshly extracted media URLs with HTTP 403 and challenges clients with JavaScript puzzles. LinkSift ships three layers of mitigation; none of them guarantees zero 403s, but together they make transient failures recover automatically.
+
+**Base mode (default image).** The container bundles a pinned [Deno](https://deno.com/) runtime and the [yt-dlp-ejs](https://github.com/yt-dlp/ejs) solver, so yt-dlp can solve YouTube's JS challenges out of the box (`yt-dlp -v` should list `deno` under JS runtimes, not "JS runtimes: none"). On top of that, LinkSift retries failed downloads with a **fresh extraction**: a transient failure (HTTP 403/429/5xx, connection reset, network timeout) re-runs the whole yt-dlp process — obtaining new signed media URLs — up to `LINKSIFT_JOB_RETRIES` extra times with exponential backoff, while keeping `.part` files so the download resumes instead of restarting. The status API reports `attempt`/`max_attempts` and the UI shows "Retrying — attempt N of M".
+
+**Robust mode (optional PO token provider).** For setups that still hit 403s, an optional overlay adds a [bgutil PO token provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) sidecar plus the matching yt-dlp plugin (GPL-licensed, so it is not part of the default image):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.youtube-robust.yml up -d --build
+```
+
+The provider is only reachable inside the Docker network (no host port is published), LinkSift waits for it to become healthy, and plugin/sidecar versions are pinned together. `GET /api/health` reports the active capabilities: `youtube_js_runtime` and `youtube_ejs` for the base layers, `po_token_provider_configured` (the environment URL is set and valid) and `po_token_provider` (the URL is valid **and** the plugin is actually installed — only then are provider arguments passed to yt-dlp).
+
+Cookies remain strictly optional: they are a way to access login-restricted content, not the default fix for 403 errors.
+
+**Troubleshooting.**
+
+- `yt-dlp -v` inside the container should show a `deno` JS runtime and EJS solver; if it prints "JS runtimes: none", the image is outdated — rebuild or pull a newer tag.
+- Check `GET /api/health`: `capabilities.youtube_js_runtime`/`youtube_ejs` should be `true` in Docker; `po_token_provider` is `true` only in robust mode.
+- In robust mode, `docker logs linksift-bgutil-provider` shows provider activity; LinkSift logs a warning and ignores the provider when `LINKSIFT_PO_TOKEN_PROVIDER_URL` is invalid.
+- If `/api/health` shows `po_token_provider_configured: true` but `po_token_provider: false`, the provider URL is set but the plugin is missing — you are most likely running the default image. Rebuild with the robust overlay (`docker compose -f docker-compose.yml -f docker-compose.youtube-robust.yml up -d --build`); LinkSift logs a warning and simply ignores the provider in the meantime.
+- Persistent, non-transient failures (private/removed videos, "Sign in to confirm…") are not retried by design.
 
 ## Supported sites
 
@@ -166,8 +197,9 @@ app.py                 Flask API, queue state, and download worker
 templates/index.html   Responsive browser interface
 static/                Favicon and static assets
 assets/                README screenshots
-Dockerfile             Production container image
+Dockerfile             Production container image (base + youtube-robust targets)
 docker-compose.yml     Local Docker deployment
+docker-compose.youtube-robust.yml  Optional PO token provider overlay
 compose.ghcr.yml       Deployment using the published GHCR image
 linksift.sh            Contributor-only local launcher
 tests/                 Offline regression suite

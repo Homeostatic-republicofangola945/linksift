@@ -28,4 +28,13 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Bundled and optional runtime components
+
+The container images bundle or optionally install the following third-party components. Each retains its own license; none of them changes the MIT licensing of the LinkSift source itself.
+
+- [Deno](https://github.com/denoland/deno) (MIT License) — JavaScript runtime copied from the official `denoland/deno:bin` image into the default LinkSift image so yt-dlp can solve YouTube JS challenges.
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) (Unlicense) — downloader used by LinkSift, installed in the default image and updated at container startup.
+- [yt-dlp-ejs](https://github.com/yt-dlp/ejs) (Unlicense) — external JavaScript challenge solver scripts for yt-dlp, installed in the default image and updated at container startup.
+- [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) (GPL-3.0) — optional PO token provider plugin and sidecar server. It is **not** part of the default image; it is only installed in the separate `youtube-robust` build target and runs as its own container when the robust Compose overlay is used.
+
 See [PROVENANCE.md](PROVENANCE.md) for the baseline audit and the boundary between inherited source and independent LinkSift work. Runtime dependencies and the base container image retain their respective licenses; refer to their installed package metadata and upstream distributions for those notices.

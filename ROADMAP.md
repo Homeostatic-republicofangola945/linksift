@@ -23,30 +23,31 @@ Available in the current source tree:
 
 Release milestone:
 
-- [ ] publish and verify the first `v0.1.0` release;
+- [x] publish and verify the first `v0.1.0` release;
 - [ ] validate the published image on Linux amd64, Linux arm64, Windows Docker Desktop, and macOS Docker Desktop;
 - [ ] record a short, repeatable manual smoke-test checklist for common download flows.
 
-## v0.2 — Diagnostics and compatibility
+## v0.2 — Queueing, performance, and compatibility
 
-Good contribution candidates:
+Included in `v0.2.0`:
 
-- expose clearer disk-space and write-permission diagnostics before a large download starts;
-- add structured, privacy-conscious runtime logs with stable job identifiers;
-- expand cancellation and cleanup tests around process-tree and container shutdown edge cases;
-- document a small compatibility matrix without making live platform calls part of CI;
-- improve keyboard navigation, focus states, status announcements, and reduced-motion behavior;
-- make startup dependency/update failures visible in the UI without leaking internal paths.
+- [x] bounded FIFO scheduler with configurable worker and queue limits;
+- [x] cancellable queued jobs, queue positions, and explicit post-processing status;
+- [x] configurable fragment concurrency and resumable partial downloads;
+- [x] fresh-extraction retries within one total timeout budget;
+- [x] bundled YouTube JavaScript challenge support and optional PO-token robust mode;
+- [x] regression coverage for scheduler startup, claim, cancellation, retry, and status races.
 
-## v0.3 — Maintainability and contributor experience
+## v0.3 — Multi-output download pipeline
 
-Larger proposals that should start with an issue:
+Planned direction:
 
-- separate download lifecycle, yt-dlp command construction, and HTTP handlers into testable modules;
-- add browser-level tests for the queue while preserving the fast offline unit suite;
-- define a deliberate dependency update and rollback policy;
-- evaluate localization only after user-facing strings have a stable structure;
-- document extension points for new output profiles without exposing arbitrary shell arguments.
+- allow one inspected URL to request multiple explicit output profiles, such as MP4 plus MP3 or multiple video qualities;
+- represent one request as a parent job with independently visible output artifacts;
+- reuse metadata and source media where practical instead of repeating identical extraction or download work;
+- keep queue limits, cancellation, TTL cleanup, and total resource bounds correct for multi-output jobs;
+- separate command construction and lifecycle state into testable modules before expanding the output graph;
+- preserve the current safe interface without exposing arbitrary yt-dlp or shell arguments.
 
 ## Non-goals
 

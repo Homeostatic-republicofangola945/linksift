@@ -39,6 +39,18 @@ class ReleaseReadinessTests(unittest.TestCase):
         self.assertIn("push: true", workflow)
         self.assertIn("packages: write", workflow)
         self.assertIn("contents: write", workflow)
+        self.assertIn(
+            "docker compose -f docker-compose.yml -f docker-compose.youtube-robust.yml config --quiet",
+            workflow,
+        )
+
+    def test_ci_validates_robust_compose_overlay(self):
+        workflow = self.read(".github/workflows/ci.yml")
+
+        self.assertIn(
+            "docker compose -f docker-compose.yml -f docker-compose.youtube-robust.yml config --quiet",
+            workflow,
+        )
 
     def test_release_workflow_attests_digest_before_creating_release(self):
         workflow = self.read(".github/workflows/release.yml")
@@ -95,8 +107,8 @@ class ReleaseReadinessTests(unittest.TestCase):
         for section in (
             "## Project principles",
             "## v0.1 — Reliable distribution",
-            "## v0.2 — Diagnostics and compatibility",
-            "## v0.3 — Maintainability and contributor experience",
+            "## v0.2 — Queueing, performance, and compatibility",
+            "## v0.3 — Multi-output download pipeline",
             "## Non-goals",
             "## How to contribute to the roadmap",
         ):
@@ -107,7 +119,7 @@ class ReleaseReadinessTests(unittest.TestCase):
         readme = self.read("README.md")
 
         self.assertIn("ghcr.io/loveisbl1nd/linksift:latest", readme)
-        self.assertIn("gh attestation verify oci://ghcr.io/loveisbl1nd/linksift:0.1.0", readme)
+        self.assertIn("gh attestation verify oci://ghcr.io/loveisbl1nd/linksift:0.2.0", readme)
         for document in ("RELEASING.md", "PROVENANCE.md", "THIRD_PARTY_NOTICES.md", "ROADMAP.md"):
             with self.subTest(document=document):
                 self.assertIn(f"]({document})", readme)

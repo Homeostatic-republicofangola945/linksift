@@ -115,10 +115,14 @@ class DownloadProgressTests(unittest.TestCase):
         self.assertEqual(process.wait_timeout, 3600)
         self.assertEqual(popen.call_args.kwargs["stderr"], app.subprocess.STDOUT)
 
-    def test_new_job_starts_with_empty_progress(self):
+    def test_new_job_starts_queued_with_empty_progress(self):
+        class AcceptingScheduler:
+            def submit(self, job_id, task):
+                return True
+
         with patch.object(app.threading, "Thread") as thread, patch.object(
             app, "runtime_unavailable_response", return_value=None
-        ):
+        ), patch.object(app, "get_scheduler", return_value=AcceptingScheduler()):
             response = app.app.test_client().post("/api/download", json={
                 "url": "https://example.com/video",
                 "format": "video",
@@ -129,13 +133,15 @@ class DownloadProgressTests(unittest.TestCase):
         job_id = response.get_json()["job_id"]
         try:
             job = app.jobs[job_id]
-            self.assertEqual(job["phase"], "starting")
+            self.assertEqual(job["status"], "queued")
+            self.assertEqual(job["phase"], "queued")
             self.assertEqual(job["downloaded_bytes"], 0)
             self.assertIsNone(job["total_bytes"])
             self.assertIsNone(job["speed"])
             self.assertIsNone(job["eta"])
             self.assertIsNone(job["percent"])
-            thread.return_value.start.assert_called_once()
+            self.assertIsNone(job["started_at"])
+            thread.assert_not_called()
         finally:
             app.jobs.pop(job_id, None)
 

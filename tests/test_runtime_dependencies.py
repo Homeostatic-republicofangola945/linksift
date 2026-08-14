@@ -64,13 +64,18 @@ class RuntimeDependencyTests(unittest.TestCase):
         with patch.object(app.shutil, "which", return_value="/usr/bin/tool"):
             response = self.client.get("/api/health")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json(), {"status": "ok", "missing_tools": []})
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["missing_tools"], [])
+        self.assertIn("capabilities", payload)
 
     def test_health_reports_degraded_with_missing_tools(self):
         with patch.object(app.shutil, "which", side_effect=lambda name: None if name == "yt-dlp" else "/usr/bin/ffmpeg"):
             response = self.client.get("/api/health")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json(), {"status": "degraded", "missing_tools": ["yt-dlp"]})
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "degraded")
+        self.assertEqual(payload["missing_tools"], ["yt-dlp"])
 
     def test_info_and_playlist_return_503_when_ytdlp_is_missing(self):
         with patch.object(app, "runtime_unavailable_response") as unavailable:

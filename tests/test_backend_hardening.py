@@ -100,13 +100,17 @@ class DownloadBackendTests(unittest.TestCase):
         self.assertEqual(job["phase"], "downloading")
         self.assertEqual(job["percent"], 100.0)
 
-    def test_concurrency_limit_returns_429(self):
-        app.jobs["existing"] = {"status": "downloading"}
-        with patch.object(app, "get_max_concurrent_downloads", return_value=1), patch.object(
+    def test_full_queue_returns_429_without_orphan_job(self):
+        class FullScheduler:
+            def submit(self, job_id, task):
+                return False
+
+        with patch.object(app, "get_scheduler", return_value=FullScheduler()), patch.object(
             app, "runtime_unavailable_response", return_value=None
         ):
             response = self.client.post("/api/download", json={"url": "https://example.test"})
         self.assertEqual(response.status_code, 429)
+        self.assertEqual(app.jobs, {})
 
 
 if __name__ == "__main__":

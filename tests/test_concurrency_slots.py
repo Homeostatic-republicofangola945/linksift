@@ -1,3 +1,4 @@
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -15,18 +16,35 @@ class ConcurrencySlotTests(unittest.TestCase):
         app.processes.clear()
 
     def test_cancelling_job_holds_concurrency_slot(self):
-        app.jobs["cancellin1"] = {"status": "cancelling"}
-        with patch.object(app, "get_max_concurrent_downloads", return_value=1), patch.object(
+        """A worker stuck on a cancelling job keeps its slot, so the next job waits."""
+        scheduler = app.DownloadScheduler(1, 5)
+        release = threading.Event()
+        cancelling_started = threading.Event()
+        try:
+            scheduler.start()
+            def cancelling_job():
+                cancelling_started.set()
+                # Simulates waiting for the killed subprocess tree to exit.
+                release.wait(timeout=10)
+
+            self.assertTrue(scheduler.submit("cancelling", cancelling_job))
+            self.assertTrue(cancelling_started.wait(timeout=5))
+            self.assertTrue(scheduler.submit("waiting", lambda: None))
+            self.assertEqual(scheduler.queue_position("waiting"), 1)
+        finally:
+            release.set()
+            scheduler.shutdown()
+
+    def test_new_download_accepted_after_job_is_cancelled(self):
+        app.jobs["cancelled1"] = {"status": "cancelled"}
+
+        class AcceptingScheduler:
+            def submit(self, job_id, task):
+                return True
+
+        with patch.object(app, "get_scheduler", return_value=AcceptingScheduler()), patch.object(
             app, "runtime_unavailable_response", return_value=None
         ):
-            response = self.client.post("/api/download", json={"url": "https://example.test/video"})
-        self.assertEqual(response.status_code, 429)
-
-    def test_slot_freed_once_job_is_cancelled(self):
-        app.jobs["cancelled1"] = {"status": "cancelled"}
-        with patch.object(app, "get_max_concurrent_downloads", return_value=1), patch.object(
-            app, "runtime_unavailable_response", return_value=None
-        ), patch.object(app.threading, "Thread"):
             response = self.client.post("/api/download", json={"url": "https://example.test/video"})
         self.assertEqual(response.status_code, 200)
         self.assertIn("job_id", response.get_json())
